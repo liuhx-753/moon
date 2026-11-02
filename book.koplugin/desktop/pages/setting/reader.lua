@@ -228,6 +228,7 @@ end
 function ReaderSettings:lookupSections(desktop)
     local reader = MoonSettings.get("reader")
     local handles_on = reader.selection_handles_enabled ~= false
+    local on_hold = reader.reader_popup_on_hold ~= false
     return {
         {
             title = _("选区"),
@@ -251,6 +252,10 @@ function ReaderSettings:lookupSections(desktop)
                         end,
                     })
                 end,
+                toggleRow(desktop, "reader", reader, "reader_popup_on_hold", on_hold, {
+                    icon = "text_select_start", title = _("按住显示划词菜单"),
+                    subtitle = _("按住文字即弹出菜单并显示所选文字，不用等滑动或松手"),
+                }),
             },
         },
     }

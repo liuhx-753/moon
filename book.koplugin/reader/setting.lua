@@ -14,6 +14,8 @@ return {
         western_font_id = "",
         western_font_name = "",
         selection_handles_enabled = true,
+        -- 按住起手就显示划词菜单（选中文字写在标题里），不用等滑动/松手才发现选错。
+        reader_popup_on_hold = true,
         -- 划词菜单的显示顺序；关闭状态仍由 reader_popup_buttons 单独保存。
         reader_popup_button_order = {
             "select", "highlight", "copy", "add_note", "dictionary", "translate",

@@ -278,6 +278,8 @@ return {
     ["划线上传失败"] = "Failed to upload highlight",
     ["划词翻译时优先显示这些语言"] = "Show these languages first when translating selected text",
     ["划词手柄"] = "Selection handles",
+    ["按住显示划词菜单"] = "Show selection menu on hold",
+    ["按住文字即弹出菜单并显示所选文字，不用等滑动或松手"] = "Long-press text to open the menu right away with the selected text shown, no swiping or waiting for release",
     ["删除"] = "Delete",
     ["删除失败：%1"] = "Delete failed: %1",
     ["删除字典"] = "Delete dictionary",

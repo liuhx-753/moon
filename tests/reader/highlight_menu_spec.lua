@@ -36,7 +36,24 @@ local factories = {
     end,
 }
 
-local highlight = { _highlight_buttons = factories }
+-- ReaderHighlight 类 stub 带原生 onHold / onHoldRelease：按住弹菜单补丁要包它们，
+-- 装上时就看得见原生方法，不用像别的补丁那样等补丁装完再摆回来。
+local hold_returns = true
+local release_calls = 0
+local ReaderHighlight = {
+    onHold = function(self, arg, ges)
+        self.hold_arg = { arg = arg, ges = ges }
+        return hold_returns
+    end,
+    onHoldRelease = function(self)
+        release_calls = release_calls + 1
+        return "native"
+    end,
+}
+package.preload["apps/reader/modules/readerhighlight"] = function() return ReaderHighlight end
+
+-- highlight 实例经 __index 走类 stub：self:onShowHighlightMenu() / self:onHoldRelease() 都在类上。
+local highlight = setmetatable({ _highlight_buttons = factories }, { __index = ReaderHighlight })
 local ui = { highlight = highlight }
 
 local HighlightMenu = require("reader.highlight_menu")
@@ -100,8 +117,7 @@ local order = HighlightMenu.order()
 Assert.eq(order[#order], "12_0_make_handmade_toc_item")
 
 -- 弹窗时已注册的就是全部：卸掉的插件按钮从设置页消失，显隐设置保留
-local ReaderHighlight = {}
-package.preload["apps/reader/modules/readerhighlight"] = function() return ReaderHighlight end
+-- ReaderHighlight stub 见前（已带原生 onHold / onHoldRelease）。
 package.preload["ui/widget/buttondialog"] = function()
     return { new = function(_, o) o.movable = { dimen = {} } return o end }
 end
@@ -125,3 +141,63 @@ Assert.not_nil(settings.reader_popup_seen["12_0_make_handmade_toc_item"])
 Assert.is_false(settings.reader_popup_buttons["12_0_make_handmade_toc_item"], "显隐设置不动")
 Assert.not_nil(highlight.highlight_dialog)
 Assert.is_nil(highlight.highlight_dialog._added_widgets)
+
+-- 按住起手即弹菜单：选中的文字写进菜单标题，抬头就知选对了没有。
+-- 真 utils.text 的 truncateUtf8 按字符截：中文标题限长不吃字节。
+package.preload["ui/uimanager"] = function()
+    return { show = function() end, setDirty = function() end, close = function() end }
+end
+
+-- 起手选词成功：立刻弹菜单，标题就是选中的文字。
+local empty = table.remove(settings.reader_popup_button_order, 2)
+highlight.selected_text = { text = "x" }
+highlight.highlight_dialog = nil
+hold_returns = true
+ReaderHighlight.onHold(highlight)
+Assert.not_nil(highlight.highlight_dialog, "按住即弹菜单，不等松手")
+Assert.eq(highlight.highlight_dialog.title, "x", "菜单标题显示当前选中的文字")
+
+-- 菜单已经开着又按住别处：不连弹两次。
+ReaderHighlight.onHold(highlight)
+Assert.eq(highlight.highlight_dialog.title, "x", "菜单开着不重弹")
+
+-- 原生没接住（按在图片 / 页外 / 长按设成什么都不做）：不弹。
+highlight.selected_text = { text = "y" }
+highlight.highlight_dialog = nil
+hold_returns = false
+Assert.is_false(ReaderHighlight.onHold(highlight))
+Assert.is_nil(highlight.highlight_dialog, "没选上文字不弹菜单")
+hold_returns = true
+
+-- 松手不重复弹：起手弹的那个还开着，不吃原生的查词典 / 默认动作。
+highlight.highlight_dialog = "menu"
+ReaderHighlight.onHoldRelease(highlight)
+Assert.eq(release_calls, 0, "菜单开着：松手归菜单自理，不再走原生")
+
+-- 标题：折行压平，超长截断。
+highlight.highlight_dialog = nil
+highlight._getDialogAnchor = function() return nil end
+highlight.selected_text = { text = "  第一行\n\n  第二行  " }
+ReaderHighlight.onShowHighlightMenu(highlight)
+Assert.eq(highlight.highlight_dialog.title, "第一行 第二行")
+highlight.selected_text = { text = ("长"):rep(200) }
+ReaderHighlight.onShowHighlightMenu(highlight)
+-- truncateUtf8 按字节不切断字符：118 字节 = 39 个中文字，加省略号约 40 字，
+-- 一行放得下墨屏菜单（x_smalltfont 一行约 55 字）。
+Assert.eq(highlight.highlight_dialog.title, ("长"):rep(39) .. "…", "标题限长，超长加省略号")
+
+-- 关掉按住即弹：起手只选词不弹菜单，回到原生松手才弹的节奏。
+settings.reader_popup_on_hold = false
+highlight.highlight_dialog = nil
+Assert.is_false(HighlightMenu.onHoldEnabled())
+ReaderHighlight.onHold(highlight)
+Assert.is_nil(highlight.highlight_dialog, "关掉后按住不弹菜单")
+
+-- 已有标注的菜单仍带标题（划过的段落点出来一样看得到原文）。
+highlight.selected_text = { text = "标注原文" }
+highlight.ui = { annotation = { annotations = { { text = "旧标注" } } } }
+ReaderHighlight.onShowHighlightMenu(highlight, 1)
+Assert.eq(highlight.highlight_dialog.title, "旧标注")
+highlight.ui = nil
+
+table.insert(settings.reader_popup_button_order, 2, empty)

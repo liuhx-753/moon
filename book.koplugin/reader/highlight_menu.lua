@@ -5,6 +5,10 @@
 所有已注册按钮（KOReader 自带、其它插件、用户补丁、本插件）都受显隐与排序设置控制：
 弹窗时扫描到的按钮记进 `reader_popup_seen`（设置键 → { title, origin }），设置页据此列出。
 
+原生长按起手只选词不高亮菜单，要松手才弹窗：滑完才发现选错就得整段重来。
+这里让按住起手即弹窗（`reader_popup_on_hold` 可关），并把选中的文字写进菜单标题，
+抬手即知选对了没有。松手不重复弹窗、不抢原生查词典。
+
 @module koplugin.book.reader.highlight_menu
 --]]
 
@@ -12,6 +16,7 @@ require("l10n").apply()
 
 local MoonSettings = require("utils.settings")
 local Ext = require("utils.extension")
+local Text = require("utils.text")
 local _ = require("gettext")
 
 ---@class BookReaderHighlightMenu
@@ -80,6 +85,12 @@ end
 ---@return boolean
 function HighlightMenu.isEnabled(key)
     return MoonSettings.get("reader").reader_popup_buttons[key] ~= false
+end
+
+--- 按住起手是否立即显示划词菜单（reader_popup_on_hold，缺省开）。
+---@return boolean
+function HighlightMenu.onHoldEnabled()
+    return MoonSettings.get("reader").reader_popup_on_hold ~= false
 end
 
 --- 合并用户顺序、内置默认顺序与扫描到的按钮，旧配置或重复项不会让按钮消失。
@@ -184,6 +195,34 @@ function HighlightMenu.ensureWrapped(highlight)
     end
 end
 
+--- 菜单标题里显示的选中文字：折行压平、限长，超长截断加省略号。
+--- 墨屏菜单很窄，整段长文选进来会把按钮挤出屏幕。
+---@param highlight table ReaderHighlight
+---@param index number|nil 已有标注的序号（nil = 新划词）
+---@return string|nil
+local function selectionTitle(highlight, index)
+    local selected = highlight.selected_text
+    local text
+    if index then
+        local annotation = highlight.ui and highlight.ui.annotation and highlight.ui.annotation.annotations
+        text = annotation and annotation[index] and annotation[index].text
+    else
+        text = selected and selected.text
+    end
+    if type(text) ~= "string" then
+        return nil
+    end
+    text = text:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+    if #text == 0 then
+        return nil
+    end
+    -- 118 / 120 都是字节口径（#text 按字节）；一行放得下墨屏菜单的中文约 39 字。
+    if #text > 120 then
+        text = Text.truncateUtf8(text, 118) .. "…"
+    end
+    return text
+end
+
 --- 弹窗时已注册的按钮就是全部：卸掉的插件、删掉的补丁不再留在设置页。显隐与顺序设置不动，装回来照旧生效。
 ---@param highlight table ReaderHighlight
 local function forgetMissing(highlight)
@@ -238,6 +277,9 @@ local function patchShowMenu()
         end
         self.highlight_dialog = ButtonDialog:new{
             buttons = buttons,
+            -- 菜单标题就是当前选中的文字：按住起手即弹窗，选的是什么一眼可见；
+            -- 滑动改选区后菜单重开，标题跟着换成新选区的文字。
+            title = selectionTitle(self, index),
             anchor = function()
                 local Selection = require("reader.selection")
                 if not index and Selection.enabled() then
@@ -268,15 +310,49 @@ local function patchShowMenu()
     ReaderHighlight.onShowHighlightMenu = require("ui.guard").wrap("highlight menu", showMenu)
 end
 
+--- 按住起手就把划词菜单显示出来：选中的文字直接写在菜单标题里，
+--- 选错抬手就走，不用等滑完、更不用等松手弹窗才发现选错了段。
+--- 只接管新划词（onShowHighlightMenu 的 index 为 nil）；已有标注的菜单仍走原生。
+local function patchHoldMenu()
+    local ReaderHighlight = require("apps/reader/modules/readerhighlight")
+    if ReaderHighlight._book_hold_menu_patched then
+        return
+    end
+    ReaderHighlight._book_hold_menu_patched = true
+
+    local orig_on_hold = ReaderHighlight.onHold
+    function ReaderHighlight:onHold(arg, ges)
+        local handled = orig_on_hold(self, arg, ges)
+        -- 原生没接住（按住图片 / 页外 / 长按设成「什么都不做」）时不弹。
+        -- 已划词后菜单开着又按住别处：等松手，避免连弹两次。
+        if handled and self.selected_text and not self.highlight_dialog
+            and HighlightMenu.onHoldEnabled() then
+            self:onShowHighlightMenu()
+        end
+        return handled
+    end
+
+    local orig_on_hold_release = ReaderHighlight.onHoldRelease
+    function ReaderHighlight:onHoldRelease()
+        -- 起手已经弹了菜单：松手归菜单自理（按钮已够用），
+        -- 不再走原生的查词典 / 默认动作，否则同一个选区上会叠两个窗。
+        if self.highlight_dialog then
+            return true
+        end
+        return orig_on_hold_release(self)
+    end
+end
+
 --- 安装划词弹窗显隐门控；重复调用无副作用。
 ---@param ui table|nil
 function HighlightMenu.install(ui)
     patchShowMenu()
+    patchHoldMenu()
     if not ui or not ui.highlight then
         return
     end
     HighlightMenu.ensureWrapped(ui.highlight)
-    -- Reader.onCreate 在 ReaderReady 事件内执行，此时 postInitCallback 已被清空。
+    -- Reader onCreate 在 ReaderReady 事件内执行，此时 postInitCallback 已被清空。
     if ui.registerPostReaderReadyCallback then
         ui:registerPostReaderReadyCallback(function()
             HighlightMenu.ensureWrapped(ui.highlight)
